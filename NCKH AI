@@ -1,0 +1,1853 @@
+1. Cấu trúc thư mục cuối cùng
+AI_Social_Simulation_Lab/
+│
+├── app.py
+├── simulation.py
+├── metrics.py
+├── stats_analysis.py
+├── experiment.py
+├── requirements.txt
+│
+├── data/
+│   ├── experiment_summary.csv
+│   ├── trajectories.csv
+│   ├── final_opinions.csv
+│   ├── sensitivity_summary.csv
+│   └── config.json
+│
+└── outputs/
+    ├── 01_mean_sd.csv
+    ├── 02_anova.csv
+    ├── 03_trend.csv
+    ├── 04_paired_test.csv
+    ├── 05_sensitivity.csv
+    ├── 06_mean_sd.png
+    ├── 07_boxplot.png
+    ├── 08_trajectory.png
+    ├── 09_final_distribution.png
+    ├── 10_sensitivity_heatmap.png
+    ├── 11_clusters.png
+    ├── 12_summary_report.txt
+    └── experiment_log.txt
+________________________________________
+2. simulation.py
+Đây là mô hình Agent. Cô  giữ logic V2 nhưng làm rõ hơn phần chọn Agent tương tác và loại chính Agent khỏi danh sách ứng viên.
+import numpy as np
+
+
+def simulate(
+    num_agents=100,
+    steps=50,
+    personalization=0.5,
+    threshold=0.5,
+    learning_rate=0.1,
+    seed=42
+):
+    """
+    Chạy một mô phỏng xã hội Agent-based.
+
+    Parameters
+    ----------
+    num_agents : int
+        Số lượng Agent.
+
+    steps : int
+        Số vòng mô phỏng.
+
+    personalization : float
+        Mức độ cá nhân hóa từ 0 đến 1.
+
+    threshold : float
+        Khoảng cách quan điểm tối đa để hai Agent có thể ảnh hưởng nhau.
+
+    learning_rate : float
+        Mức độ thay đổi quan điểm sau tương tác.
+
+    seed : int
+        Random seed để tái lập kết quả.
+
+    Returns
+    -------
+    history : np.ndarray
+        Ma trận kích thước (steps + 1, num_agents).
+    """
+
+    rng = np.random.default_rng(seed)
+
+    # Khởi tạo quan điểm
+    opinions = rng.uniform(-1.0, 1.0, num_agents)
+
+    history = [opinions.copy()]
+
+    for _ in range(steps):
+
+        new_opinions = opinions.copy()
+
+        for i in range(num_agents):
+
+            # Không cho Agent tự tương tác với chính mình
+            candidates = np.array(
+                [j for j in range(num_agents) if j != i]
+            )
+
+            if len(candidates) == 0:
+                continue
+
+            # Quyết định có sử dụng cá nhân hóa hay không
+            use_personalization = rng.random() < personalization
+
+            if use_personalization:
+
+                # Tìm các Agent có quan điểm tương đồng
+                similar_mask = (
+                    np.abs(opinions[candidates] - opinions[i])
+                    < threshold
+                )
+
+                similar_candidates = candidates[similar_mask]
+
+                if len(similar_candidates) > 0:
+                    j = rng.choice(similar_candidates)
+                else:
+                    j = rng.choice(candidates)
+
+            else:
+                # Không cá nhân hóa
+                j = rng.choice(candidates)
+
+            # Khoảng cách quan điểm
+            diff = opinions[j] - opinions[i]
+
+            # Chỉ cập nhật nếu nằm trong vùng ảnh hưởng
+            if abs(diff) < threshold:
+
+                new_opinions[i] += learning_rate * diff
+
+        # Giới hạn quan điểm
+        opinions = np.clip(new_opinions, -1.0, 1.0)
+
+        history.append(opinions.copy())
+
+    return np.array(history)
+________________________________________
+3. metrics.py
+Phần này tính toàn bộ chỉ số của nghiên cứu.
+import numpy as np
+
+
+def mean_opinion(opinions):
+    """Quan điểm trung bình."""
+    return float(np.mean(opinions))
+
+
+def polarization_index(opinions):
+    """
+    Chỉ số phân tán quan điểm.
+
+    P = mean(|opinion_i - mean_opinion|)
+    """
+
+    mean = np.mean(opinions)
+
+    return float(
+        np.mean(np.abs(opinions - mean))
+    )
+
+
+def count_clusters(opinions, gap_threshold=0.15):
+    """
+    Đếm số cụm quan điểm.
+
+    Các quan điểm được sắp xếp.
+    Nếu khoảng cách giữa hai quan điểm liên tiếp
+    lớn hơn gap_threshold thì tạo một cụm mới.
+    """
+
+    sorted_opinions = np.sort(opinions)
+
+    if len(sorted_opinions) == 0:
+        return 0
+
+    gaps = np.diff(sorted_opinions)
+
+    clusters = 1 + np.sum(
+        gaps > gap_threshold
+    )
+
+    return int(clusters)
+
+
+def mean_absolute_change(history):
+    """
+    Mức thay đổi quan điểm trung bình
+    qua toàn bộ quá trình.
+    """
+
+    changes = np.abs(
+        np.diff(history, axis=0)
+    )
+
+    return float(np.mean(changes))
+
+
+def calculate_final_metrics(
+    history,
+    cluster_gap=0.15
+):
+    """
+    Tính các chỉ số cuối cùng.
+    """
+
+    final_opinions = history[-1]
+
+    return {
+        "final_mean_opinion":
+            mean_opinion(final_opinions),
+
+        "final_polarization":
+            polarization_index(final_opinions),
+
+        "final_clusters":
+            count_clusters(
+                final_opinions,
+                cluster_gap
+            ),
+
+        "mean_absolute_change":
+            mean_absolute_change(history)
+    }
+
+
+def calculate_trajectory_metrics(
+    history,
+    cluster_gap=0.15
+):
+    """
+    Tính các chỉ số ở từng vòng.
+    """
+
+    rows = []
+
+    for step, opinions in enumerate(history):
+
+        rows.append({
+            "step": step,
+
+            "mean_opinion":
+                mean_opinion(opinions),
+
+            "polarization":
+                polarization_index(opinions),
+
+            "clusters":
+                count_clusters(
+                    opinions,
+                    cluster_gap
+                )
+        })
+
+    return rows
+________________________________________
+4. stats_analysis.py
+Đây là phần kiểm định thống kê V2.
+import numpy as np
+import pandas as pd
+
+from scipy.stats import (
+    f_oneway,
+    linregress,
+    ttest_rel
+)
+
+
+def descriptive_statistics(
+    df,
+    value_column="final_polarization",
+    group_column="personalization"
+):
+
+    result = (
+        df.groupby(group_column)[value_column]
+        .agg(
+            mean="mean",
+            sd="std",
+            min="min",
+            max="max",
+            count="count"
+        )
+        .reset_index()
+    )
+
+    return result
+
+
+def one_way_anova(
+    df,
+    value_column="final_polarization",
+    group_column="personalization"
+):
+
+    groups = []
+
+    for _, group in df.groupby(group_column):
+
+        groups.append(
+            group[value_column].dropna().values
+        )
+
+    F, p = f_oneway(*groups)
+
+    return {
+        "F_statistic": float(F),
+        "p_value": float(p)
+    }
+
+
+def eta_squared(
+    df,
+    value_column="final_polarization",
+    group_column="personalization"
+):
+
+    overall_mean = df[value_column].mean()
+
+    ss_between = 0
+    ss_total = 0
+
+    for _, group in df.groupby(group_column):
+
+        n = len(group)
+
+        group_mean = group[value_column].mean()
+
+        ss_between += (
+            n * (group_mean - overall_mean) ** 2
+        )
+
+    ss_total = np.sum(
+        (
+            df[value_column] - overall_mean
+        ) ** 2
+    )
+
+    if ss_total == 0:
+        return 0.0
+
+    return float(
+        ss_between / ss_total
+    )
+
+
+def linear_trend_test(
+    df,
+    value_column="final_polarization",
+    group_column="personalization"
+):
+
+    grouped = (
+        df.groupby(group_column)[value_column]
+        .mean()
+        .reset_index()
+    )
+
+    x = grouped[group_column].values
+    y = grouped[value_column].values
+
+    result = linregress(x, y)
+
+    return {
+        "slope": float(result.slope),
+        "r_squared": float(result.rvalue ** 2),
+        "p_value": float(result.pvalue)
+    }
+
+
+def paired_comparison(
+    df,
+    value_column="final_polarization",
+    low=0.0,
+    high=1.0
+):
+
+    low_df = (
+        df[df["personalization"] == low]
+        .sort_values("run_id")
+    )
+
+    high_df = (
+        df[df["personalization"] == high]
+        .sort_values("run_id")
+    )
+
+    common_ids = sorted(
+        set(low_df["run_id"])
+        & set(high_df["run_id"])
+    )
+
+    low_values = (
+        low_df[
+            low_df["run_id"].isin(common_ids)
+        ][value_column]
+        .values
+    )
+
+    high_values = (
+        high_df[
+            high_df["run_id"].isin(common_ids)
+        ][value_column]
+        .values
+    )
+
+    t_stat, p_value = ttest_rel(
+        low_values,
+        high_values
+    )
+
+    return {
+        "t_statistic": float(t_stat),
+        "p_value": float(p_value),
+        "n_pairs": len(common_ids)
+    }
+
+
+def significance_text(p):
+
+    if p < 0.001:
+        return "Có bằng chứng rất mạnh về sự khác biệt (p < 0,001)."
+
+    elif p < 0.01:
+        return "Có bằng chứng mạnh về sự khác biệt (p < 0,01)."
+
+    elif p < 0.05:
+        return "Có bằng chứng thống kê về sự khác biệt (p < 0,05)."
+
+    else:
+        return (
+            "Chưa có đủ bằng chứng thống kê "
+            "để kết luận có sự khác biệt (p ≥ 0,05)."
+        )
+________________________________________
+5. experiment.py
+Đây là trung tâm của toàn bộ nghiên cứu.
+Chạy file này sẽ tự động:
+•	chạy 150 thí nghiệm;
+•	lưu dữ liệu;
+•	tính các chỉ số;
+•	chạy ANOVA;
+•	chạy paired t-test;
+•	kiểm tra xu hướng;
+•	chạy phân tích độ nhạy;
+•	xuất bảng;
+•	xuất biểu đồ;
+•	tạo báo cáo TXT.
+import os
+import json
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from simulation import simulate
+from metrics import (
+    calculate_final_metrics,
+    calculate_trajectory_metrics
+)
+
+from stats_analysis import (
+    descriptive_statistics,
+    one_way_anova,
+    eta_squared,
+    linear_trend_test,
+    paired_comparison,
+    significance_text
+)
+
+
+# ============================================================
+# CẤU HÌNH NGHIÊN CỨU
+# ============================================================
+
+NUM_AGENTS = 100
+STEPS = 50
+
+THRESHOLD = 0.5
+LEARNING_RATE = 0.1
+
+PERSONALIZATION_LEVELS = [
+    0.0,
+    0.25,
+    0.50,
+    0.75,
+    1.0
+]
+
+RUNS_PER_CONDITION = 30
+
+CLUSTER_GAP = 0.15
+
+# Random seed
+BASE_SEEDS = list(range(101, 131))
+
+
+DATA_DIR = "data"
+OUTPUT_DIR = "outputs"
+
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+# ============================================================
+# HÀM GHI FILE
+# ============================================================
+
+def save_config():
+
+    config = {
+        "project_name":
+            "AI Social Simulation Lab",
+
+        "num_agents":
+            NUM_AGENTS,
+
+        "steps":
+            STEPS,
+
+        "threshold":
+            THRESHOLD,
+
+        "learning_rate":
+            LEARNING_RATE,
+
+        "personalization_levels":
+            PERSONALIZATION_LEVELS,
+
+        "runs_per_condition":
+            RUNS_PER_CONDITION,
+
+        "cluster_gap":
+            CLUSTER_GAP,
+
+        "total_experiments":
+            len(PERSONALIZATION_LEVELS)
+            * RUNS_PER_CONDITION,
+
+        "created_at":
+            datetime.now().isoformat()
+    }
+
+    with open(
+        os.path.join(DATA_DIR, "config.json"),
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            config,
+            f,
+            indent=4,
+            ensure_ascii=False
+        )
+
+
+# ============================================================
+# CHẠY 150 THÍ NGHIỆM
+# ============================================================
+
+def run_main_experiment():
+
+    summary_rows = []
+    trajectory_rows = []
+    final_opinion_rows = []
+
+    print("\n" + "=" * 70)
+    print("AI SOCIAL SIMULATION LAB")
+    print("THỰC NGHIỆM CHÍNH")
+    print("=" * 70)
+
+    print(
+        f"Số Agent: {NUM_AGENTS}"
+    )
+
+    print(
+        f"Số vòng: {STEPS}"
+    )
+
+    print(
+        f"Số mức cá nhân hóa: "
+        f"{len(PERSONALIZATION_LEVELS)}"
+    )
+
+    print(
+        f"Số lần/mức: "
+        f"{RUNS_PER_CONDITION}"
+    )
+
+    print(
+        f"Tổng số thí nghiệm: "
+        f"{len(PERSONALIZATION_LEVELS) * RUNS_PER_CONDITION}"
+    )
+
+    experiment_number = 0
+
+    for personalization in PERSONALIZATION_LEVELS:
+
+        for run_index in range(
+            RUNS_PER_CONDITION
+        ):
+
+            experiment_number += 1
+
+            seed = BASE_SEEDS[run_index]
+
+            print(
+                f"[{experiment_number:03d}/150] "
+                f"Personalization="
+                f"{personalization:.2f} | "
+                f"Run={run_index + 1:02d} | "
+                f"Seed={seed}"
+            )
+
+            history = simulate(
+                num_agents=NUM_AGENTS,
+                steps=STEPS,
+                personalization=personalization,
+                threshold=THRESHOLD,
+                learning_rate=LEARNING_RATE,
+                seed=seed
+            )
+
+            # ------------------------------------------------
+            # ID
+            # ------------------------------------------------
+
+            run_id = run_index + 1
+
+            experiment_id = (
+                f"P{int(personalization * 100):03d}"
+                f"_R{run_id:02d}"
+            )
+
+            # ------------------------------------------------
+            # METRICS CUỐI
+            # ------------------------------------------------
+
+            final_metrics = (
+                calculate_final_metrics(
+                    history,
+                    CLUSTER_GAP
+                )
+            )
+
+            summary_rows.append({
+
+                "experiment_id":
+                    experiment_id,
+
+                "run_id":
+                    run_id,
+
+                "personalization":
+                    personalization,
+
+                "personalization_percent":
+                    personalization * 100,
+
+                "seed":
+                    seed,
+
+                "num_agents":
+                    NUM_AGENTS,
+
+                "steps":
+                    STEPS,
+
+                "threshold":
+                    THRESHOLD,
+
+                "learning_rate":
+                    LEARNING_RATE,
+
+                "cluster_gap":
+                    CLUSTER_GAP,
+
+                **final_metrics
+
+            })
+
+            # ------------------------------------------------
+            # TRAJECTORY
+            # ------------------------------------------------
+
+            trajectory_metrics = (
+                calculate_trajectory_metrics(
+                    history,
+                    CLUSTER_GAP
+                )
+            )
+
+            for row in trajectory_metrics:
+
+                row["experiment_id"] = (
+                    experiment_id
+                )
+
+                row["run_id"] = run_id
+
+                row["personalization"] = (
+                    personalization
+                )
+
+                row["seed"] = seed
+
+                trajectory_rows.append(row)
+
+            # ------------------------------------------------
+            # FINAL OPINIONS
+            # ------------------------------------------------
+
+            final_opinions = history[-1]
+
+            for agent_id, opinion in enumerate(
+                final_opinions
+            ):
+
+                final_opinion_rows.append({
+
+                    "experiment_id":
+                        experiment_id,
+
+                    "run_id":
+                        run_id,
+
+                    "personalization":
+                        personalization,
+
+                    "seed":
+                        seed,
+
+                    "agent_id":
+                        agent_id,
+
+                    "final_opinion":
+                        opinion
+
+                })
+
+    summary_df = pd.DataFrame(
+        summary_rows
+    )
+
+    trajectory_df = pd.DataFrame(
+        trajectory_rows
+    )
+
+    final_opinion_df = pd.DataFrame(
+        final_opinion_rows
+    )
+
+    # --------------------------------------------------------
+    # LƯU CSV
+    # --------------------------------------------------------
+
+    summary_df.to_csv(
+        os.path.join(
+            DATA_DIR,
+            "experiment_summary.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    trajectory_df.to_csv(
+        os.path.join(
+            DATA_DIR,
+            "trajectories.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    final_opinion_df.to_csv(
+        os.path.join(
+            DATA_DIR,
+            "final_opinions.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    print("\nĐã hoàn thành 150 thí nghiệm.")
+
+    return (
+        summary_df,
+        trajectory_df,
+        final_opinion_df
+    )
+
+
+# ============================================================
+# PHÂN TÍCH THỐNG KÊ
+# ============================================================
+
+def run_statistical_analysis(
+    summary_df
+):
+
+    # --------------------------------------------------------
+    # DESCRIPTIVE
+    # --------------------------------------------------------
+
+    desc = descriptive_statistics(
+        summary_df,
+        "final_polarization",
+        "personalization"
+    )
+
+    desc[
+        "personalization_percent"
+    ] = desc["personalization"] * 100
+
+    desc.to_csv(
+        os.path.join(
+            OUTPUT_DIR,
+            "01_mean_sd.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    # --------------------------------------------------------
+    # ANOVA
+    # --------------------------------------------------------
+
+    anova = one_way_anova(
+        summary_df,
+        "final_polarization",
+        "personalization"
+    )
+
+    eta = eta_squared(
+        summary_df,
+        "final_polarization",
+        "personalization"
+    )
+
+    anova_df = pd.DataFrame([{
+
+        "F_statistic":
+            anova["F_statistic"],
+
+        "p_value":
+            anova["p_value"],
+
+        "eta_squared":
+            eta,
+
+        "interpretation":
+            significance_text(
+                anova["p_value"]
+            )
+
+    }])
+
+    anova_df.to_csv(
+        os.path.join(
+            OUTPUT_DIR,
+            "02_anova.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    # --------------------------------------------------------
+    # TREND
+    # --------------------------------------------------------
+
+    trend = linear_trend_test(
+        summary_df,
+        "final_polarization",
+        "personalization"
+    )
+
+    trend_df = pd.DataFrame([trend])
+
+    trend_df.to_csv(
+        os.path.join(
+            OUTPUT_DIR,
+            "03_trend.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    # --------------------------------------------------------
+    # PAIRED TEST
+    # --------------------------------------------------------
+
+    paired = paired_comparison(
+        summary_df,
+        "final_polarization",
+        0.0,
+        1.0
+    )
+
+    paired_df = pd.DataFrame([{
+
+        **paired,
+
+        "interpretation":
+            significance_text(
+                paired["p_value"]
+            )
+
+    }])
+
+    paired_df.to_csv(
+        os.path.join(
+            OUTPUT_DIR,
+            "04_paired_test.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    return (
+        desc,
+        anova_df,
+        trend_df,
+        paired_df
+    )
+
+
+# ============================================================
+# PHÂN TÍCH ĐỘ NHẠY
+# ============================================================
+
+def run_sensitivity_analysis():
+
+    thresholds = [
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7
+    ]
+
+    learning_rates = [
+        0.05,
+        0.10,
+        0.15,
+        0.20,
+        0.25
+    ]
+
+    personalization = 0.5
+
+    rows = []
+
+    print("\n" + "=" * 70)
+    print("PHÂN TÍCH ĐỘ NHẠY")
+    print("=" * 70)
+
+    for threshold in thresholds:
+
+        for lr in learning_rates:
+
+            values = []
+
+            for run in range(10):
+
+                seed = 1000 + run
+
+                history = simulate(
+                    num_agents=NUM_AGENTS,
+                    steps=STEPS,
+                    personalization=personalization,
+                    threshold=threshold,
+                    learning_rate=lr,
+                    seed=seed
+                )
+
+                metrics = calculate_final_metrics(
+                    history,
+                    CLUSTER_GAP
+                )
+
+                values.append(
+                    metrics[
+                        "final_polarization"
+                    ]
+                )
+
+            rows.append({
+
+                "threshold":
+                    threshold,
+
+                "learning_rate":
+                    lr,
+
+                "mean_polarization":
+                    np.mean(values),
+
+                "sd_polarization":
+                    np.std(
+                        values,
+                        ddof=1
+                    ),
+
+                "n":
+                    len(values)
+
+            })
+
+    sensitivity_df = pd.DataFrame(rows)
+
+    sensitivity_df.to_csv(
+        os.path.join(
+            OUTPUT_DIR,
+            "05_sensitivity.csv"
+        ),
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    return sensitivity_df
+
+
+# ============================================================
+# BIỂU ĐỒ
+# ============================================================
+
+def create_figures(
+    summary_df,
+    trajectory_df,
+    final_opinion_df,
+    sensitivity_df
+):
+
+    sns.set_theme(
+        style="whitegrid"
+    )
+
+    # ========================================================
+    # 1. MEAN ± SD
+    # ========================================================
+
+    grouped = (
+        summary_df
+        .groupby("personalization")
+        ["final_polarization"]
+        .agg(
+            ["mean", "std"]
+        )
+        .reset_index()
+    )
+
+    grouped[
+        "personalization_percent"
+    ] = grouped["personalization"] * 100
+
+    plt.figure(figsize=(9, 5))
+
+    plt.errorbar(
+        grouped[
+            "personalization_percent"
+        ],
+        grouped["mean"],
+        yerr=grouped["std"],
+        marker="o",
+        linewidth=2,
+        capsize=5
+    )
+
+    plt.xlabel(
+        "Mức độ cá nhân hóa (%)"
+    )
+
+    plt.ylabel(
+        "Chỉ số phân tán quan điểm"
+    )
+
+    plt.title(
+        "Mean ± SD của chỉ số phân tán quan điểm"
+    )
+
+    plt.tight_layout()
+
+    plt.savefig(
+        os.path.join(
+            OUTPUT_DIR,
+            "06_mean_sd.png"
+        ),
+        dpi=300
+    )
+
+    plt.close()
+
+    # ========================================================
+    # 2. BOXPLOT
+    # ========================================================
+
+    plt.figure(figsize=(9, 5))
+
+    sns.boxplot(
+        data=summary_df,
+        x="personalization_percent",
+        y="final_polarization"
+    )
+
+    plt.xlabel(
+        "Mức độ cá nhân hóa (%)"
+    )
+
+    plt.ylabel(
+        "Chỉ số phân tán quan điểm"
+    )
+
+    plt.title(
+        "Phân bố chỉ số phân tán theo mức cá nhân hóa"
+    )
+
+    plt.tight_layout()
+
+    plt.savefig(
+        os.path.join(
+            OUTPUT_DIR,
+            "07_boxplot.png"
+        ),
+        dpi=300
+    )
+
+    plt.close()
+
+    # ========================================================
+    # 3. TRAJECTORY
+    # ========================================================
+
+    trajectory_mean = (
+        trajectory_df
+        .groupby(
+            [
+                "personalization",
+                "step"
+            ]
+        )["polarization"]
+        .mean()
+        .reset_index()
+    )
+
+    plt.figure(figsize=(10, 6))
+
+    sns.lineplot(
+        data=trajectory_mean,
+        x="step",
+        y="polarization",
+        hue="personalization",
+        marker="o"
+    )
+
+    plt.xlabel(
+        "Vòng mô phỏng"
+    )
+
+    plt.ylabel(
+        "Chỉ số phân tán quan điểm"
+    )
+
+    plt.title(
+        "Thay đổi phân tán quan điểm theo thời gian"
+    )
+
+    plt.legend(
+        title="Cá nhân hóa"
+    )
+
+    plt.tight_layout()
+
+    plt.savefig(
+        os.path.join(
+            OUTPUT_DIR,
+            "08_trajectory.png"
+        ),
+        dpi=300
+    )
+
+    plt.close()
+
+    # ========================================================
+    # 4. FINAL DISTRIBUTION
+    # ========================================================
+
+    plt.figure(figsize=(10, 6))
+
+    sns.kdeplot(
+        data=final_opinion_df,
+        x="final_opinion",
+        hue="personalization",
+        fill=False
+    )
+
+    plt.xlabel(
+        "Quan điểm cuối cùng"
+    )
+
+    plt.ylabel(
+        "Mật độ"
+    )
+
+    plt.title(
+        "Phân bố quan điểm cuối cùng"
+    )
+
+    plt.tight_layout()
+
+    plt.savefig(
+        os.path.join(
+            OUTPUT_DIR,
+            "09_final_distribution.png"
+        ),
+        dpi=300
+    )
+
+    plt.close()
+
+    # ========================================================
+    # 5. SENSITIVITY HEATMAP
+    # ========================================================
+
+    pivot = sensitivity_df.pivot(
+        index="threshold",
+        columns="learning_rate",
+        values="mean_polarization"
+    )
+
+    plt.figure(figsize=(9, 6))
+
+    sns.heatmap(
+        pivot,
+        annot=True,
+        fmt=".3f",
+        cmap="YlOrRd"
+    )
+
+    plt.xlabel(
+        "Tốc độ cập nhật"
+    )
+
+    plt.ylabel(
+        "Ngưỡng tương tác"
+    )
+
+    plt.title(
+        "Heatmap phân tích độ nhạy"
+    )
+
+    plt.tight_layout()
+
+    plt.savefig(
+        os.path.join(
+            OUTPUT_DIR,
+            "10_sensitivity_heatmap.png"
+        ),
+        dpi=300
+    )
+
+    plt.close()
+
+    # ========================================================
+    # 6. CLUSTERS
+    # ========================================================
+
+    cluster_mean = (
+        summary_df
+        .groupby(
+            "personalization"
+        )["final_clusters"]
+        .agg(
+            ["mean", "std"]
+        )
+        .reset_index()
+    )
+
+    cluster_mean[
+        "personalization_percent"
+    ] = cluster_mean[
+        "personalization"
+    ] * 100
+
+    plt.figure(figsize=(9, 5))
+
+    plt.errorbar(
+        cluster_mean[
+            "personalization_percent"
+        ],
+        cluster_mean["mean"],
+        yerr=cluster_mean["std"],
+        marker="o",
+        capsize=5,
+        linewidth=2
+    )
+
+    plt.xlabel(
+        "Mức độ cá nhân hóa (%)"
+    )
+
+    plt.ylabel(
+        "Số cụm quan điểm"
+    )
+
+    plt.title(
+        "Số cụm quan điểm theo mức cá nhân hóa"
+    )
+
+    plt.tight_layout()
+
+    plt.savefig(
+        os.path.join(
+            OUTPUT_DIR,
+            "11_clusters.png"
+        ),
+        dpi=300
+    )
+
+    plt.close()
+
+
+# ============================================================
+# TẠO BÁO CÁO TỰ ĐỘNG
+# ============================================================
+
+def create_text_report(
+    desc,
+    anova_df,
+    trend_df,
+    paired_df,
+    sensitivity_df
+):
+
+    report_path = os.path.join(
+        OUTPUT_DIR,
+        "12_summary_report.txt"
+    )
+
+    with open(
+        report_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        f.write(
+            "BÁO CÁO TỰ ĐỘNG – AI SOCIAL SIMULATION LAB\n"
+        )
+
+        f.write(
+            "=" * 70 + "\n\n"
+        )
+
+        f.write(
+            "1. THIẾT KẾ THỰC NGHIỆM\n"
+        )
+
+        f.write(
+            f"- Số Agent: {NUM_AGENTS}\n"
+        )
+
+        f.write(
+            f"- Số vòng: {STEPS}\n"
+        )
+
+        f.write(
+            f"- Mức cá nhân hóa: "
+            f"{[int(x*100) for x in PERSONALIZATION_LEVELS]}%\n"
+        )
+
+        f.write(
+            f"- Số lần chạy mỗi mức: "
+            f"{RUNS_PER_CONDITION}\n"
+        )
+
+        f.write(
+            f"- Tổng số thí nghiệm: "
+            f"{len(PERSONALIZATION_LEVELS) * RUNS_PER_CONDITION}\n\n"
+        )
+
+        # ----------------------------------------------------
+        # DESCRIPTIVE
+        # ----------------------------------------------------
+
+        f.write(
+            "2. THỐNG KÊ MÔ TẢ\n"
+        )
+
+        f.write(
+            desc.to_string(
+                index=False
+            )
+        )
+
+        f.write("\n\n")
+
+        # ----------------------------------------------------
+        # ANOVA
+        # ----------------------------------------------------
+
+        f.write(
+            "3. ANOVA\n"
+        )
+
+        f.write(
+            anova_df.to_string(
+                index=False
+            )
+        )
+
+        f.write("\n\n")
+
+        # ----------------------------------------------------
+        # TREND
+        # ----------------------------------------------------
+
+        f.write(
+            "4. PHÂN TÍCH XU HƯỚNG\n"
+        )
+
+        f.write(
+            trend_df.to_string(
+                index=False
+            )
+        )
+
+        f.write("\n\n")
+
+        # ----------------------------------------------------
+        # PAIRED
+        # ----------------------------------------------------
+
+        f.write(
+            "5. SO SÁNH 0% VÀ 100%\n"
+        )
+
+        f.write(
+            paired_df.to_string(
+                index=False
+            )
+        )
+
+        f.write("\n\n")
+
+        # ----------------------------------------------------
+        # SENSITIVITY
+        # ----------------------------------------------------
+
+        f.write(
+            "6. PHÂN TÍCH ĐỘ NHẠY\n"
+        )
+
+        f.write(
+            sensitivity_df.to_string(
+                index=False
+            )
+        )
+
+        f.write("\n\n")
+
+        f.write(
+            "7. LƯU Ý KHOA HỌC\n"
+        )
+
+        f.write(
+            "- Kết quả chỉ áp dụng cho mô hình mô phỏng.\n"
+        )
+
+        f.write(
+            "- Không được diễn giải kết quả như bằng chứng trực tiếp về xã hội thực tế.\n"
+        )
+
+        f.write(
+            "- Chỉ số phân cực trong nghiên cứu là chỉ số vận hành của mô hình.\n"
+        )
+
+        f.write(
+            "- Không sử dụng số liệu này để khẳng định quan hệ nhân quả ngoài mô hình.\n"
+        )
+
+    print(
+        f"\nĐã tạo báo cáo: {report_path}"
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    print("\nBẮT ĐẦU NGHIÊN CỨU...\n")
+
+    save_config()
+
+    (
+        summary_df,
+        trajectory_df,
+        final_opinion_df
+    ) = run_main_experiment()
+
+    (
+        desc,
+        anova_df,
+        trend_df,
+        paired_df
+    ) = run_statistical_analysis(
+        summary_df
+    )
+
+    sensitivity_df = (
+        run_sensitivity_analysis()
+    )
+
+    create_figures(
+        summary_df,
+        trajectory_df,
+        final_opinion_df,
+        sensitivity_df
+    )
+
+    create_text_report(
+        desc,
+        anova_df,
+        trend_df,
+        paired_df,
+        sensitivity_df
+    )
+
+    print("\n" + "=" * 70)
+
+    print(
+        "HOÀN THÀNH TOÀN BỘ THỰC NGHIỆM"
+    )
+
+    print("=" * 70)
+
+    print(
+        "\nDữ liệu: ./data/"
+    )
+
+    print(
+        "Biểu đồ + bảng phân tích: ./outputs/"
+    )
+________________________________________
+6. app.py
+Đây là giao diện để cô và học sinh chạy thử, xem kết quả và trình diễn sản phẩm.
+import os
+
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from simulation import simulate
+from metrics import calculate_final_metrics
+
+
+st.set_page_config(
+    page_title="AI Social Simulation Lab",
+    layout="wide"
+)
+
+st.title(
+    "🧪 AI Social Simulation Lab"
+)
+
+st.subheader(
+    "Nghiên cứu ảnh hưởng của mức độ cá nhân hóa "
+    "đến sự phân bố quan điểm trong xã hội giả lập"
+)
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.header(
+    "⚙️ Cấu hình mô phỏng"
+)
+
+num_agents = st.sidebar.slider(
+    "Số Agent",
+    10,
+    500,
+    100,
+    step=10
+)
+
+steps = st.sidebar.slider(
+    "Số vòng",
+    10,
+    200,
+    50,
+    step=10
+)
+
+personalization = st.sidebar.slider(
+    "Mức cá nhân hóa",
+    0.0,
+    1.0,
+    0.5,
+    step=0.05
+)
+
+threshold = st.sidebar.slider(
+    "Ngưỡng tương tác",
+    0.1,
+    1.0,
+    0.5,
+    step=0.05
+)
+
+learning_rate = st.sidebar.slider(
+    "Tốc độ cập nhật",
+    0.01,
+    0.5,
+    0.1,
+    step=0.01
+)
+
+seed = st.sidebar.number_input(
+    "Random seed",
+    min_value=0,
+    max_value=999999,
+    value=42
+)
+
+
+# ============================================================
+# CHẠY MÔ PHỎNG
+# ============================================================
+
+if st.button(
+    "▶️ Chạy mô phỏng"
+):
+
+    history = simulate(
+        num_agents=num_agents,
+        steps=steps,
+        personalization=personalization,
+        threshold=threshold,
+        learning_rate=learning_rate,
+        seed=seed
+    )
+
+    final_metrics = (
+        calculate_final_metrics(
+            history
+        )
+    )
+
+    st.success(
+        "Mô phỏng hoàn thành!"
+    )
+
+    # --------------------------------------------------------
+    # METRICS
+    # --------------------------------------------------------
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric(
+        "Quan điểm trung bình",
+        f"{final_metrics['final_mean_opinion']:.3f}"
+    )
+
+    col2.metric(
+        "Phân tán quan điểm",
+        f"{final_metrics['final_polarization']:.3f}"
+    )
+
+    col3.metric(
+        "Số cụm",
+        final_metrics["final_clusters"]
+    )
+
+    col4.metric(
+        "Thay đổi trung bình",
+        f"{final_metrics['mean_absolute_change']:.3f}"
+    )
+
+    # --------------------------------------------------------
+    # TRAJECTORY
+    # --------------------------------------------------------
+
+    st.write(
+        "### 📈 Diễn biến quan điểm"
+    )
+
+    fig, ax = plt.subplots(
+        figsize=(12, 6)
+    )
+
+    history_array = history
+
+    for i in range(
+        min(num_agents, 50)
+    ):
+
+        ax.plot(
+            history_array[:, i],
+            alpha=0.35
+        )
+
+    ax.set_xlabel(
+        "Vòng mô phỏng"
+    )
+
+    ax.set_ylabel(
+        "Quan điểm"
+    )
+
+    ax.set_title(
+        "Sự thay đổi quan điểm của các Agent"
+    )
+
+    st.pyplot(fig)
+
+    # --------------------------------------------------------
+    # FINAL DISTRIBUTION
+    # --------------------------------------------------------
+
+    st.write(
+        "### 📊 Phân bố quan điểm cuối"
+    )
+
+    fig2, ax2 = plt.subplots(
+        figsize=(10, 4)
+    )
+
+    ax2.hist(
+        history[-1],
+        bins=20,
+        edgecolor="black",
+        alpha=0.75
+    )
+
+    ax2.set_xlabel(
+        "Quan điểm"
+    )
+
+    ax2.set_ylabel(
+        "Số Agent"
+    )
+
+    st.pyplot(fig2)
+
+
+# ============================================================
+# KẾT QUẢ THỰC NGHIỆM
+# ============================================================
+
+st.divider()
+
+st.header(
+    "🧪 Kết quả thí nghiệm chính"
+)
+
+summary_path = (
+    "data/experiment_summary.csv"
+)
+
+if os.path.exists(summary_path):
+
+    df = pd.read_csv(
+        summary_path
+    )
+
+    st.dataframe(
+        df,
+        use_container_width=True
+    )
+
+    st.write(
+        "### Mean ± SD"
+    )
+
+    grouped = (
+        df.groupby(
+            "personalization"
+        )["final_polarization"]
+        .agg(["mean", "std"])
+        .reset_index()
+    )
+
+    grouped[
+        "personalization"
+    ] *= 100
+
+    fig, ax = plt.subplots(
+        figsize=(10, 5)
+    )
+
+    ax.errorbar(
+        grouped["personalization"],
+        grouped["mean"],
+        yerr=grouped["std"],
+        marker="o",
+        capsize=5,
+        linewidth=2
+    )
+
+    ax.set_xlabel(
+        "Mức cá nhân hóa (%)"
+    )
+
+    ax.set_ylabel(
+        "Chỉ số phân tán quan điểm"
+    )
+
+    ax.set_title(
+        "Mean ± SD"
+    )
+
+    st.pyplot(fig)
+
+else:
+
+    st.info(
+        "Chưa có dữ liệu. "
+        "Hãy chạy experiment.py trước."
+    )
+________________________________________
+7. requirements.txt
+streamlit
+numpy
+pandas
+matplotlib
+scipy
+seaborn
+________________________________________
+8. Cách chạy 150 thí nghiệm
+Sau khi tạo đúng cấu trúc thư mục:
+Bước 1 – Cài thư viện
+Mở Terminal/CMD:
+pip install -r requirements.txt
+Bước 2 – Chạy thí nghiệm
+python experiment.py
+Chương trình sẽ lần lượt chạy:
+0%    → 30 lần
+25%   → 30 lần
+50%   → 30 lần
+75%   → 30 lần
+100%  → 30 lần
+Tổng:
+5 × 30 = 150 thí nghiệm
+Màn hình sẽ hiện kiểu:
+[001/150] Personalization=0.00 | Run=01 | Seed=101
+[002/150] Personalization=0.00 | Run=02 | Seed=102
+...
+[030/150] Personalization=0.00 | Run=30 | Seed=130
+
+[031/150] Personalization=0.25 | Run=01 | Seed=101
+...
+[150/150] Personalization=1.00 | Run=30 | Seed=130
